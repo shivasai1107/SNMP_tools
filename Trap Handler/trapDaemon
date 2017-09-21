@@ -1,0 +1,102 @@
+#!/usr/bin/perl
+# A simple trap handler
+use DBI;
+use Net::SNMP qw(:ALL);
+my $dbh= DBI->connect("DBI:mysql:database=shiva;host=localhost","root","Jyothi!123") or die print (TRAP_FILE $DBI::errstr);
+my $TRAP_FILE = "/var/trap/log.txt";	
+my $host = <STDIN>;	# Read the Hostname - First line of input from STDIN
+ chomp($host);
+my $ip = <STDIN>;	# Read the IP - Second line of input
+ chomp($ip);
+my $t1=<STDIN>;
+ chomp($t1);
+my $t2=<STDIN>;
+ chomp($t2);
+my @t3=<STDIN>;
+ chomp($t3);
+open(TRAPFILE, ">>", $TRAP_FILE);
+my @dev=split / /,$t3[0];
+my @stat=split/ /,$t3[1];
+my $fqdn=substr($dev[1],1,length($dev[1])-3);
+my $status=$stat[1];
+my $time=time;
+my $sth1= $dbh->do("CREATE TABLE IF NOT EXISTS DATA
+(fqdn varchar(255) NOT NULL,
+newstatus int NOT NULL DEFAULT '0',
+newtime int NOT NULL DEFAULT '0',
+oldstatus int NOT NULL DEFAULT '0',
+oldtime int NOT NULL DEFAULT '0',
+UNIQUE KEY(fqdn)
+) ;") or die print TRAPFILE  $DBI::errstr;
+my $sth2= $dbh->prepare("INSERT IGNORE INTO DATA (fqdn) VALUES ('$fqdn')");
+$sth2->execute() or die print TRAPFILE $DBI::errstr;
+$sth2->finish();
+my $sth3= $dbh->prepare("UPDATE DATA SET oldstatus=newstatus,oldtime=newtime,newstatus='$status',newtime='$time' WHERE fqdn='$fqdn'");
+$sth3->execute() or die print TRAPFILE $DBI::errstr;
+$sth3->finish();
+my $sth4= $dbh->prepare("select * from manager");
+$sth4->execute();
+my @row= $sth4->fetchrow_array();
+my $ip=$row[0];
+my $port=$row[1];
+my $community=$row[2];
+my ($session, $error)= Net::SNMP->session(
+	-hostname=>$ip,
+	-community=>$community,
+	-port=>$port,
+);
+if (!defined($session)) {
+	printf (TRAPFILE "ERROR1: %s. \n",$error);
+}
+if ($status==3){
+	my $sth5= $dbh->prepare("SELECT fqdn,newtime,oldstatus,oldtime FROM DATA WHERE fqdn='$fqdn'");
+	$sth5->execute();
+	my @row1=$sth5->fetchrow_array();
+	my @toid1=('1.3.6.1.4.1.41717.20.1',OCTET_STRING,$dev[1],
+		   '1.3.6.1.4.1.41717.20.2',INTEGER,$row1[1],
+		   '1.3.6.1.4.1.41717.20.3',INTEGER,$row1[2],
+		   '1.3.6.1.4.1.41717.20.4',INTEGER,$row1[3]);
+	print(TRAPFILE "@row1");
+	my $result1= $session->trap(
+			-enterprise   => '1.3.6.1.4.1',
+			-agentaddr    => '127.0.0.1',
+			-generictrap  => 6,
+			-varbindlist  => \@toid1,
+			);
+	if (!defined($result1)) {
+		print (TRAPFILE "ERROR2: %s .\n", $session->error());
+	} else {
+		print (TRAPFILE "Trap Sent. \n");
+	}
+
+}
+if ($status==2) {
+	my $sth6= $dbh->prepare("SELECT fqdn,newtime,oldstatus,oldtime FROM DATA WHERE newstatus=2");
+	$sth6->execute() or die print (TRAPFILE $DBI::errstr);
+	if ($sth6->rows >1) {
+		my $p=1;
+		my @toid2=qw();
+		while (my @row2= $sth6->fetchrow_array()){
+		push @toid2,("1.3.6.1.4.1.41717.30.".$p++,OCTET_STRING,"$row2[0]",
+			"1.3.6.1.4.1.41717.30.".$p++,UNSIGNED32,"$row2[1]",
+			"1.3.6.1.4.1.41717.30.".$p++,INTEGER,"$row2[2]",
+			"1.3.6.1.4.1.41717.30.".$p++,UNSIGNED32,"$row2[3]",);
+		print (TRAPFILE "@toid2 . \n");
+		}
+		
+		my $result1=$session->trap(
+				-enterprise   => '1.3.6.1.4.1',
+                        	-agentaddr    => '127.0.0.1',
+                	        -generictrap  => 6,
+                        	-varbindlist  => \@toid2,
+                        	);
+	if (!defined($result)) {
+                print (TRAPFILE "ERROR2: %s .\n", $session->error());
+        } else {
+                print (TRAPFILE "Trap Sent. \n");
+        }		
+	}	
+}
+print(TRAPFILE "FQDN: $dev[1]\n STATUS: $status\n");
+close(TRAPFILE)
+ 
